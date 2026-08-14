@@ -306,6 +306,8 @@ def infill_bars(
                     "track_idx": track_idx,
                     "start": token_start_idx,
                     "end": token_end_idx,
+                    "generated_ids": list(generated_tokens.ids),
+                    "generated_tokens": list(generated_tokens.tokens or ()),
                     "target_tokens": list(tokens[track_idx].tokens),
                 }, default=int) + "\n")
 
