@@ -35,10 +35,14 @@ class FakeTokenizer:
     def decode_token_ids(self, sequence):
         sequence.tokens = list(self.decoded.get(sequence.ids[0], ()))
 
+    def encode_token_ids(self, sequence):
+        sequence.ids = [1 if sequence.tokens == ["Bar_None", "TimeSig_4/4"] else 10]
+
 
 def test_structural_masks_are_tokenizer_semantic():
     constraints = semantic_constraint_token_ids(FakeTokenizer(), 7, 8)
-    assert constraints["DISALLOW_COMPOUND_BAR_TIME"] == {1, 2}
+    assert constraints["DISALLOW_COMPOUND_BAR_TIME"] == {2}
+    assert 1 not in constraints["DISALLOW_COMPOUND_BAR_TIME"]
     assert 10 not in constraints["DISALLOW_COMPOUND_BAR_TIME"]
     assert constraints["DISALLOW_TRACK_START"] == {7}
     assert constraints["DISALLOW_TRACK_END"] == {8}
@@ -65,5 +69,6 @@ def test_stop_processor_accepts_python_lists_and_applies_semantic_masks():
     assert torch.isneginf(masked[0, 6])  # FillBar_End
     assert torch.isneginf(masked[0, 7])  # Track_Start
     assert torch.isneginf(masked[0, 8])  # Track_End
-    assert torch.isneginf(masked[0, 1])  # compound Bar_None + TimeSig
+    assert not torch.isneginf(masked[0, 1])  # canonical compound encoding remains valid
+    assert torch.isneginf(masked[0, 2])  # noncanonical equivalent is constrained
     assert torch.isneginf(masked[0, 3])  # invalid/empty BPE token
