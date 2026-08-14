@@ -6,6 +6,7 @@ import json
 from miditok import MMM, TokSequence
 from transformers import LogitsProcessorList, GenerationConfig
 from . import rwkv_cpp_shared_library, rwkv_cpp_model
+from logits_processor import canonical_structural_token_replacements
 
 
 class InvalidProbabilitySupportError(RuntimeError):
@@ -208,6 +209,7 @@ class CustomGenerator:
                 self.tokens_beginning_timesig.append(i)
             if "Bar_None" in t.tokens and any("TimeSig" in x for x in t.tokens):
                 self.tokens_have_bar_none_and_timesig.append(i)
+        self.structural_token_replacements = canonical_structural_token_replacements(tokenizer)
 
     def initialize_with_tuned_state(self, state_path):
         """
@@ -398,8 +400,9 @@ class CustomGenerator:
             
             next_token_id = next_token[0, 0].item()
             self._sampling_trace.record({"stage": "selected_token", "step_index": tokens_generated, "bar_index": int(bar_index), "selected_token_id": int(next_token_id)})
-            if next_token_id == 797:
-                next_token_id = 665
+            next_token_id = self.structural_token_replacements.get(
+                next_token_id, next_token_id
+            )
 
             # Process the generated token through the model
             logits, current_state = self.model.eval(

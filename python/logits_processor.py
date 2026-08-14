@@ -45,14 +45,25 @@ def _bar_time_token_ids(tokenizer) -> set[int]:
             == ("Bar_None", "TimeSig_4/4")
         )
     }
-    canonical = TokSequence(
-        tokens=["Bar_None", "TimeSig_4/4"], ids=[], are_ids_encoded=False
-    )
+    canonical = TokSequence(tokens=["Bar_None", "TimeSig_4/4"], ids=[], are_ids_encoded=False)
     try:
         tokenizer.encode_token_ids(canonical)
     except Exception:
         return set()
     return equivalent_ids - set(canonical.ids)
+
+
+def canonical_structural_token_replacements(tokenizer) -> dict[int, int]:
+    """Map noncanonical 4/4 compound encodings to the tokenizer's canonical ID."""
+    canonical = TokSequence(tokens=["Bar_None", "TimeSig_4/4"], ids=[], are_ids_encoded=False)
+    try:
+        tokenizer.encode_token_ids(canonical)
+    except Exception:
+        return {}
+    if len(canonical.ids) != 1:
+        return {}
+    canonical_id = int(canonical.ids[0])
+    return {token_id: canonical_id for token_id in _bar_time_token_ids(tokenizer)}
 
 
 def _empty_decode_token_ids(tokenizer) -> set[int]:
