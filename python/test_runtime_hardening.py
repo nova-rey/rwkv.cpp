@@ -9,8 +9,9 @@ from rwkv_cpp.cpp_model import apply_repetition_penalty  # noqa: E402
 
 
 class FakeTokenizer:
-    vocab_size = 10
+    vocab_size = 11
     vocab = {
+        "Bar_None": 9,
         "FillBar_Start": 5,
         "Infill_Track": 4,
         "FillBar_End": 6,
@@ -28,6 +29,7 @@ class FakeTokenizer:
         # Both IDs are equivalent compound BPE encodings in the bundled tokenizer.
         1: ("Bar_None", "TimeSig_4/4"),
         2: ("Bar_None", "TimeSig_4/4"),
+        10: ("Bar_None", "TimeSig_3/4"),
     }
 
     def decode_token_ids(self, sequence):
@@ -37,6 +39,7 @@ class FakeTokenizer:
 def test_structural_masks_are_tokenizer_semantic():
     constraints = semantic_constraint_token_ids(FakeTokenizer(), 7, 8)
     assert constraints["DISALLOW_COMPOUND_BAR_TIME"] == {1, 2}
+    assert 10 not in constraints["DISALLOW_COMPOUND_BAR_TIME"]
     assert constraints["DISALLOW_TRACK_START"] == {7}
     assert constraints["DISALLOW_TRACK_END"] == {8}
     assert constraints["DISALLOW_EMPTY_BPE"] == {3}
