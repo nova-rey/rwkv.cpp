@@ -112,3 +112,16 @@ def test_runtime_bar_index_counts_compound_bpe_boundaries():
         13: ("Bar_None", "TimeSig_4/4"),
     })
     assert semantic_bar_count(tokenizer, [5, 13, 12, 11]) == 2
+
+
+def test_stop_processor_completes_at_requested_bar_count():
+    tokenizer = FakeTokenizer()
+    tokenizer.vocab_size = 16
+    tokenizer.decoded.update({11: ("ACBarNoteDensity_1",), 13: ("Bar_None",)})
+    processor = StopLogitsProcessor(9, 6, 7, 8, tokenizer)
+    processor.infill_type = "bar"
+    processor.n_bars_to_infill = 1
+    processor.n_attribute_controls = 1
+    scores = torch.zeros(1, tokenizer.vocab_size)
+    finished = processor([5, 1, 11, 13], scores)
+    assert finished[0, tokenizer.vocab["FillBar_End"]].item() == 0.0
