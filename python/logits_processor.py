@@ -223,7 +223,7 @@ class StopLogitsProcessor(LogitsProcessor):
 
         penalty = float("inf")
 
-        completed = n_bar_none > self.n_bars_to_infill
+        completed = n_bar_none >= self.n_bars_to_infill
 
         # Don't sample an EOS token until all bars are generated. Completion
         # handling is applied after semantic masks below so the EOS token is not
