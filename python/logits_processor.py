@@ -165,15 +165,12 @@ class StopLogitsProcessor(LogitsProcessor):
 
         penalty = float("inf")
 
-        # If we reach the self.n_bars_to_infill + 1 BarStart token sampled,
-        # we have generated enough content
-        if n_bar_none > self.n_bars_to_infill:
-            scores[:, :] = -penalty  # Penalize all tokens
-            # But enforce the sampling of EOS token to stop generation
-            scores[:, self.eos_token_id] = 0.0
+        completed = n_bar_none > self.n_bars_to_infill
 
-        # Don't sample an EOS token until all bars are generated
-        if n_bar_none <= self.n_bars_to_infill:
+        # Don't sample an EOS token until all bars are generated. Completion
+        # handling is applied after semantic masks below so the EOS token is not
+        # immediately masked by DISALLOW_FILLBAR_END.
+        if not completed:
             scores[:, self.eos_token_id] = -penalty
 
         end_time = time.time()
@@ -183,5 +180,9 @@ class StopLogitsProcessor(LogitsProcessor):
             for token_id in token_ids:
                 if token_id < scores.shape[-1]:
                     scores[:, token_id] = -penalty
+
+        if completed:
+            scores[:, :] = -penalty
+            scores[:, self.eos_token_id] = 0.0
 
         return scores
