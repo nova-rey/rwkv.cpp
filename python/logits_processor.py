@@ -9,6 +9,62 @@ from miditok import TokSequence
 from transformers import LogitsProcessor
 
 
+def _decoded_token_names(tokenizer, token_id: int) -> tuple[str, ...]:
+    """Decode one bundled BPE id into its underlying MMM token names."""
+    sequence = TokSequence(ids=[int(token_id)], are_ids_encoded=True)
+    tokenizer.decode_token_ids(sequence)
+    return tuple(sequence.tokens or ())
+
+
+def _semantic_token_ids(tokenizer, names: tuple[str, ...]) -> set[int]:
+    """Return ids whose single-token decode contains all requested names."""
+    wanted = set(names)
+    return {
+        token_id
+        for token_id in range(tokenizer.vocab_size)
+        if wanted.issubset(_decoded_token_names(tokenizer, token_id))
+    }
+
+
+def _bar_time_token_ids(tokenizer) -> set[int]:
+    """Return BPE ids encoding exactly a bar boundary and time signature.
+
+    Tokens that also contain note/event material are valid continuations and must
+    not be treated as the consecutive-bar structural token.
+    """
+    return {
+        token_id
+        for token_id in range(tokenizer.vocab_size)
+        if (
+            len(_decoded_token_names(tokenizer, token_id)) == 2
+            and _decoded_token_names(tokenizer, token_id)[0] == "Bar_None"
+            and _decoded_token_names(tokenizer, token_id)[1].startswith("TimeSig_")
+        )
+    }
+
+
+def _empty_decode_token_ids(tokenizer) -> set[int]:
+    """Return bundled BPE ids with no valid MMM decode (e.g. token 663)."""
+    return {
+        token_id
+        for token_id in range(tokenizer.vocab_size)
+        if not _decoded_token_names(tokenizer, token_id)
+    }
+
+
+def semantic_constraint_token_ids(tokenizer, track_start_token_id: int, track_end_token_id: int) -> dict[str, set[int]]:
+    """Build tokenizer-aware structural token constraint sets."""
+    return {
+        "DISALLOW_TRACK_START": {int(track_start_token_id)},
+        "DISALLOW_TRACK_END": {int(track_end_token_id)},
+        "DISALLOW_INFIL_TRACK": _semantic_token_ids(tokenizer, ("Infill_Track",)),
+        "DISALLOW_FILLBAR_END": _semantic_token_ids(tokenizer, ("FillBar_End",)),
+        "DISALLOW_PAD": _semantic_token_ids(tokenizer, ("PAD_None",)),
+        "DISALLOW_COMPOUND_BAR_TIME": _bar_time_token_ids(tokenizer),
+        "DISALLOW_EMPTY_BPE": _empty_decode_token_ids(tokenizer),
+    }
+
+
 class StopLogitsProcessor(LogitsProcessor):
     """
 
@@ -43,6 +99,9 @@ class StopLogitsProcessor(LogitsProcessor):
         self.track_end_token_id = track_end_token_id
         self.tokenizer = tokenizer
         self.total_time = 0
+        self.constraint_token_ids = semantic_constraint_token_ids(
+            tokenizer, track_start_token_id, track_end_token_id
+        )
 
     def __call__(
         self, input_ids: torch.LongTensor, scores: torch.FloatTensor
@@ -62,14 +121,22 @@ class StopLogitsProcessor(LogitsProcessor):
 
         generated_tokens = TokSequence(are_ids_encoded=True)
 
+        input_ids = np.asarray(input_ids, dtype=np.int64).reshape(-1)
+
         if self.infill_type == "bar":
-            fill_start_idx = np.where(
+            fill_positions = np.flatnonzero(
                 input_ids == self.tokenizer.vocab["FillBar_Start"]
-            )[0]
+            )
         elif self.infill_type == "track":
-            fill_start_idx = np.where(
+            fill_positions = np.flatnonzero(
                 input_ids == self.tokenizer.vocab["Infill_Track"]
-            )[0]
+            )
+        else:
+            raise ValueError(f"Unsupported infill type: {self.infill_type!r}")
+
+        if len(fill_positions) == 0:
+            raise ValueError("Infill marker is absent from the generation sequence")
+        fill_start_idx = int(fill_positions[-1])
 
         n_bar_none = 0
         if fill_start_idx + self.n_attribute_controls + 1 < len(input_ids):
@@ -84,14 +151,14 @@ class StopLogitsProcessor(LogitsProcessor):
                 )[0]
             )
 
-        penalty = 999999.0
+        penalty = float("inf")
 
         # If we reach the self.n_bars_to_infill + 1 BarStart token sampled,
         # we have generated enough content
         if n_bar_none > self.n_bars_to_infill:
             scores[:, :] = -penalty  # Penalize all tokens
             # But enforce the sampling of EOS token to stop generation
-            scores[:, self.eos_token_id] = penalty
+            scores[:, self.eos_token_id] = 0.0
 
         # Don't sample an EOS token until all bars are generated
         if n_bar_none <= self.n_bars_to_infill:
@@ -100,15 +167,9 @@ class StopLogitsProcessor(LogitsProcessor):
         end_time = time.time()
         self.total_time += end_time - start_time
 
-        # don't sample track start/end
-        scores[:, self.track_start_token_id] = -penalty
-        scores[:, self.track_end_token_id] = -penalty
-        
-        scores[:, 797] = -penalty # consecutive Bar_None
-        scores[:, 4] = -penalty # Infill_Track
-        scores[:, 6] = -penalty # FillBar_End
-        scores[:, 0] = -penalty # PAD_None
-        scores[:, 8] = -penalty # Track_Start
-        scores[:, 663] = -penalty # nonsense token???
+        for rule, token_ids in self.constraint_token_ids.items():
+            for token_id in token_ids:
+                if token_id < scores.shape[-1]:
+                    scores[:, token_id] = -penalty
 
         return scores
