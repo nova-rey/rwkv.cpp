@@ -2,7 +2,12 @@ import sys
 
 sys.path.insert(0, ".")
 
-from inference import _ensure_generated_bar_prefix, _extract_generated_token_ids  # noqa: E402
+from inference import (  # noqa: E402
+    _ensure_generated_bar_prefix,
+    _extract_generated_token_ids,
+    _replace_decoded_token_span,
+    _trim_generated_bar_stream,
+)
 
 
 class FakeTokenizer:
@@ -59,3 +64,45 @@ def test_compound_first_bar_is_not_prefixed_twice():
     tokenizer = FakeTokenizer()
     assert _ensure_generated_bar_prefix([1, 12], tokenizer) == [1, 12]
     assert _ensure_generated_bar_prefix([12], tokenizer) == [9, 14, 12]
+
+
+def test_decoded_span_replacement_preserves_semantic_context():
+    class Sequence:
+        are_ids_encoded = False
+
+        def __init__(self, ids, tokens):
+            self.ids = list(ids)
+            self.tokens = list(tokens)
+
+    target = Sequence(
+        ["Track_Start", "Bar_0", "Pitch_A", "Bar_1", "Pitch_B", "Bar_2", "Track_End"],
+        ["Track_Start", "Bar_None", "Pitch_60", "Bar_None", "Pitch_61", "Bar_None", "Track_End"],
+    )
+    generated = Sequence(
+        ["Bar_None", "Pitch_X", "Bar_None", "Pitch_Y"],
+        ["Bar_None", "Pitch_70", "Bar_None", "Pitch_71"],
+    )
+    _replace_decoded_token_span(target, 3, 5, generated)
+    assert target.tokens == [
+        "Track_Start", "Bar_None", "Pitch_60", "Bar_None", "Pitch_70",
+        "Bar_None", "Pitch_71", "Bar_None", "Track_End",
+    ]
+    assert target.ids == [
+        "Track_Start", "Bar_0", "Pitch_A", "Bar_None", "Pitch_X",
+        "Bar_None", "Pitch_Y", "Bar_2", "Track_End",
+    ]
+
+
+def test_terminal_bar_boundary_is_not_inserted_into_requested_span():
+    ids = [9, 14, 20, 9, 14, 21]
+    tokens = ["Bar_None", "TimeSig_4/4", "Pitch_60", "Bar_None", "TimeSig_4/4", "Pitch_61"]
+    trimmed_ids, trimmed_tokens = _trim_generated_bar_stream(ids, tokens, 1)
+    assert trimmed_ids == [9, 14, 20]
+    assert trimmed_tokens == ["Bar_None", "TimeSig_4/4", "Pitch_60"]
+
+
+def test_two_bar_stream_keeps_two_bar_starts_and_drops_only_third():
+    ids = [9, 14, 20, 9, 14, 21, 9, 14, 22]
+    tokens = ["Bar_None", "TimeSig_4/4", "Pitch_60", "Bar_None", "TimeSig_4/4", "Pitch_61", "Bar_None", "TimeSig_4/4", "Pitch_62"]
+    _, trimmed_tokens = _trim_generated_bar_stream(ids, tokens, 2)
+    assert trimmed_tokens == tokens[:6]

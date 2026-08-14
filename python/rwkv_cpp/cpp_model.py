@@ -171,6 +171,7 @@ class CppModelConfig:
         model_path: str = "",
         state_path: str = "",
         gpu_layer_count: int | None = None,
+        thread_count: int | None = None,
         shared_library_path: str | None = None,
         **kwargs
     ):
@@ -186,6 +187,12 @@ class CppModelConfig:
         if gpu_layer_count < 0:
             raise ValueError("gpu_layer_count must be non-negative")
         self.gpu_layer_count = gpu_layer_count
+        if thread_count is None:
+            raw_threads = os.environ.get("MIDI_RWKV_THREADS")
+            thread_count = int(raw_threads) if raw_threads else None
+        if thread_count is not None and thread_count <= 0:
+            raise ValueError("thread_count must be positive")
+        self.thread_count = thread_count
 
 
 class CustomGenerator:
@@ -198,6 +205,7 @@ class CustomGenerator:
         self.model = rwkv_cpp_model.RWKVModel(
             self.library, 
             config.model_path, 
+            thread_count=(config.thread_count if config.thread_count is not None else max(1, os.cpu_count() // 2)),
             gpu_layer_count=config.gpu_layer_count
         )
         self.tokenizer = tokenizer    

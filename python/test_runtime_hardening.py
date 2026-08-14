@@ -11,6 +11,7 @@ from logits_processor import (  # noqa: E402
     semantic_constraint_token_ids,
 )
 from rwkv_cpp.cpp_model import apply_repetition_penalty, semantic_bar_count  # noqa: E402
+from rwkv_cpp.cpp_model import CppModelConfig  # noqa: E402
 
 
 class FakeTokenizer:
@@ -125,3 +126,24 @@ def test_stop_processor_completes_at_requested_bar_count():
     scores = torch.zeros(1, tokenizer.vocab_size)
     finished = processor([5, 1, 11, 13], scores)
     assert finished[0, tokenizer.vocab["FillBar_End"]].item() == 0.0
+
+
+def test_stop_processor_counts_prompt_scaffold_as_first_target_bar():
+    tokenizer = FakeTokenizer()
+    tokenizer.vocab_size = 16
+    tokenizer.decoded.update({11: ("ACBarNoteDensity_1",), 13: ("Bar_None",)})
+    processor = StopLogitsProcessor(9, 6, 7, 8, tokenizer)
+    processor.infill_type = "bar"
+    processor.n_bars_to_infill = 2
+    processor.n_attribute_controls = 1
+    scores = torch.zeros(1, tokenizer.vocab_size)
+    # The scaffold opens bar 0; one generated boundary starts bar 1 and
+    # therefore completes a two-bar request.
+    finished = processor([5, 1, 11, 13], scores)
+    assert finished[0, tokenizer.vocab["FillBar_End"]].item() == 0.0
+
+
+def test_cpp_model_config_accepts_thread_count(monkeypatch):
+    monkeypatch.setenv("MIDI_RWKV_THREADS", "4")
+    config = CppModelConfig("model.bin")
+    assert config.thread_count == 4

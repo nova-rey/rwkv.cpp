@@ -281,10 +281,33 @@ def infill_bars(
         tokenizer.decode_token_ids(generated_tokens)
         # print(generated_tokens.ids)
 
-        generated_tokens.ids = _ensure_generated_bar_prefix(generated_tokens.ids, tokenizer)
+        had_bar_prefix = bool(generated_tokens.tokens) and generated_tokens.tokens[0] == "Bar_None"
+        generated_tokens.ids = _ensure_generated_bar_prefix(
+            generated_tokens.ids, tokenizer, generated_tokens.tokens
+        )
+        if not had_bar_prefix:
+            generated_tokens.tokens = [
+                "Bar_None", "TimeSig_4/4", *(generated_tokens.tokens or [])
+            ]
+        generated_tokens.ids, generated_tokens.tokens = _trim_generated_bar_stream(
+            generated_tokens.ids,
+            generated_tokens.tokens or [],
+            subset_bars_to_infill[1] - subset_bars_to_infill[0],
+        )
 
-        tokens[track_idx].ids[token_start_idx:token_end_idx] = generated_tokens.ids
-        tokens[track_idx].tokens = tokenizer._ids_to_tokens(tokens[track_idx].ids)
+        _replace_decoded_token_span(
+            tokens[track_idx], token_start_idx, token_end_idx, generated_tokens
+        )
+        dump_path = os.getenv("MIDI_RWKV_TOKEN_DUMP")
+        if dump_path:
+            import json
+            with open(dump_path, "a", encoding="utf-8") as handle:
+                handle.write(json.dumps({
+                    "track_idx": track_idx,
+                    "start": token_start_idx,
+                    "end": token_end_idx,
+                    "target_tokens": list(tokens[track_idx].tokens),
+                }, default=int) + "\n")
 
         end_time = time.time()
         print(
@@ -341,16 +364,71 @@ def _extract_generated_token_ids(
     return [int(token_id) for token_id in output_ids[cursor:end]]
 
 
-def _ensure_generated_bar_prefix(generated_ids: list[int], tokenizer: MMM) -> list[int]:
+def _ensure_generated_bar_prefix(
+    generated_ids: list[int],
+    tokenizer: MMM,
+    decoded_tokens: list[str] | None = None,
+) -> list[int]:
     """Ensure a decoded bar stream starts at a bar boundary.
 
     A compound BPE token may already contain ``Bar_None`` and ``TimeSig``;
     comparing only against the canonical standalone ID would duplicate that
     boundary during reconstruction.
     """
-    if generated_ids and "Bar_None" in decoded_token_names(tokenizer, generated_ids[0]):
+    if decoded_tokens is not None:
+        has_bar_prefix = bool(decoded_tokens) and decoded_tokens[0] == "Bar_None"
+    else:
+        has_bar_prefix = bool(generated_ids) and "Bar_None" in decoded_token_names(
+            tokenizer, generated_ids[0]
+        )
+    if has_bar_prefix:
         return list(generated_ids)
     return [tokenizer.vocab["Bar_None"], tokenizer.vocab["TimeSig_4/4"], *generated_ids]
+
+
+def _replace_decoded_token_span(
+    target: TokSequence,
+    start: int,
+    end: int,
+    generated: TokSequence,
+) -> None:
+    """Replace a semantic-token span without reinterpreting ids as BPE ids.
+
+    ``_adapt_prompt_for_infilling`` decodes the source sequences before it
+    computes ``start`` and ``end``.  Those indices therefore address semantic
+    MMM tokens, while the generated sequence is decoded before replacement as
+    well.  Re-running ``_ids_to_tokens`` on the mixed semantic/BPE id list
+    silently corrupts the untouched context, especially when compound BPE
+    tokens are present.
+    """
+    if target.are_ids_encoded or generated.are_ids_encoded:
+        raise ValueError("decoded token span replacement requires semantic tokens")
+    target.ids[start:end] = list(generated.ids)
+    target.tokens[start:end] = list(generated.tokens or ())
+
+
+def _trim_generated_bar_stream(
+    generated_ids: list[int],
+    generated_tokens: list[str],
+    requested_bars: int,
+) -> tuple[list[int], list[str]]:
+    """Drop a terminal bar boundary that separates infill from right context.
+
+    The model stream uses a ``Bar_None`` boundary to begin the next bar.  The
+    first target bar is opened by the fill scaffold (and materialized by the
+    semantic prefix helper), so a one-bar request can legitimately return one
+    additional boundary before EOS.  That separator belongs to the following
+    source context, not to the replacement span.
+    """
+    if requested_bars <= 0:
+        return [], []
+    boundaries = [
+        index for index, token in enumerate(generated_tokens) if token == "Bar_None"
+    ]
+    if len(boundaries) <= requested_bars:
+        return list(generated_ids), list(generated_tokens)
+    cutoff = boundaries[requested_bars]
+    return list(generated_ids[:cutoff]), list(generated_tokens[:cutoff])
 
 
 def _adapt_prompt_for_infilling(
@@ -377,9 +455,13 @@ def _adapt_prompt_for_infilling(
     """
     toksequence_to_infill: TokSequence = TokSequence(are_ids_encoded=False)
 
-    # Decode BPE tokens: this is necessary to put <INFILL_BAR> tokens
-    # at the right place
-    tokenizer.decode_token_ids(tokens)
+    # Decode BPE tokens: this is necessary to put <INFILL_BAR> tokens at the
+    # right place.  After the first infill operation all sequences are already
+    # semantic tokens; decoding them again would reinterpret semantic ids as
+    # BPE ids and corrupt the persistent source context.
+    for sequence in tokens:
+        if sequence.are_ids_encoded:
+            tokenizer.decode_token_ids(sequence)
 
     start_bar_idx = subset_bars_to_infill[0]
     end_bar_idx = subset_bars_to_infill[1]

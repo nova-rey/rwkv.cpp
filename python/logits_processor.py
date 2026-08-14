@@ -1,6 +1,8 @@
 """Definition of logits processor used for generation."""
 
 import time
+import json
+import os
 
 import miditok
 import numpy as np
@@ -223,7 +225,28 @@ class StopLogitsProcessor(LogitsProcessor):
 
         penalty = float("inf")
 
-        completed = n_bar_none >= self.n_bars_to_infill
+        # The prompt already opens the first target bar with the
+        # ``Bar_None + TimeSig`` scaffold.  A generated ``Bar_None`` therefore
+        # starts the next target bar; for N requested bars we need N-1 such
+        # transitions, while still requiring one transition for a one-bar
+        # infill so that the model emits a complete bar boundary before EOS.
+        required_boundaries = max(1, int(self.n_bars_to_infill) - 1)
+        completed = n_bar_none >= required_boundaries
+
+        trace_path = os.getenv("MIDI_RWKV_STOP_TRACE")
+        if trace_path:
+            with open(trace_path, "a", encoding="utf-8") as handle:
+                handle.write(json.dumps({
+                    "sequence_length": len(input_ids),
+                    "n_bar_none": int(n_bar_none),
+                    "requested": int(self.n_bars_to_infill),
+                    "required_boundaries": int(required_boundaries),
+                    "completed": bool(completed),
+                    "tail": [
+                        list(decoded_token_names(self.tokenizer, int(token_id)))
+                        for token_id in input_ids[-32:]
+                    ],
+                }, default=int) + "\n")
 
         # Don't sample an EOS token until all bars are generated. Completion
         # handling is applied after semantic masks below so the EOS token is not
