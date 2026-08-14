@@ -16,6 +16,59 @@ def _decoded_token_names(tokenizer, token_id: int) -> tuple[str, ...]:
     return tuple(sequence.tokens or ())
 
 
+def decoded_token_names(tokenizer, token_id: int) -> tuple[str, ...]:
+    """Public tokenizer-semantic decode helper for generation code and tests."""
+    return _decoded_token_names(tokenizer, token_id)
+
+
+def semantic_bar_count_after_fill(
+    input_ids,
+    tokenizer,
+    n_attribute_controls: int,
+    infill_type: str = "bar",
+) -> int:
+    """Count generated bar boundaries without depending on one BPE encoding.
+
+    ``MMM`` can encode ``Bar_None`` standalone, as a compound
+    ``Bar_None + TimeSig`` token, or as a split sequence.  Counting only the
+    canonical ``Bar_None`` id therefore under-counts valid generated output.
+    The prompt's initial bar/time-signature scaffold and first attribute packet
+    are skipped semantically; only boundaries after that scaffold are counted.
+    """
+    ids = [int(token_id) for token_id in input_ids]
+    marker_name = "FillBar_Start" if infill_type == "bar" else "Infill_Track"
+    marker_id = tokenizer.vocab[marker_name]
+    marker_positions = [i for i, token_id in enumerate(ids) if token_id == marker_id]
+    if not marker_positions:
+        raise ValueError(f"{marker_name} marker is absent from the generation sequence")
+
+    cursor = marker_positions[-1] + 1
+    if infill_type == "bar":
+        structural_seen = set()
+        while cursor < len(ids) and not {"Bar_None", "TimeSig_4/4"}.issubset(structural_seen):
+            structural_seen.update(decoded_token_names(tokenizer, ids[cursor]))
+            cursor += 1
+    else:
+        # Track infill has a program token before any optional controls, not a
+        # bar/time-signature scaffold.
+        if cursor < len(ids):
+            cursor += 1
+
+    controls_seen = 0
+    while cursor < len(ids) and controls_seen < n_attribute_controls:
+        controls_seen += sum(
+            name.startswith("AC")
+            for name in decoded_token_names(tokenizer, ids[cursor])
+        )
+        cursor += 1
+
+    return sum(
+        name == "Bar_None"
+        for token_id in ids[cursor:]
+        for name in decoded_token_names(tokenizer, token_id)
+    )
+
+
 def _semantic_token_ids(tokenizer, names: tuple[str, ...]) -> set[int]:
     """Return ids whose single-token decode contains all requested names."""
     wanted = set(names)
@@ -161,18 +214,12 @@ class StopLogitsProcessor(LogitsProcessor):
             raise ValueError("Infill marker is absent from the generation sequence")
         fill_start_idx = int(fill_positions[-1])
 
-        n_bar_none = 0
-        if fill_start_idx + self.n_attribute_controls + 1 < len(input_ids):
-            generated_tokens.ids = input_ids[
-                fill_start_idx + self.n_attribute_controls + 1 :
-            ].tolist()
-            self.tokenizer.decode_token_ids(generated_tokens)
-
-            n_bar_none = len(
-                np.where(
-                    np.array(generated_tokens.ids) == self.tokenizer.vocab["Bar_None"]
-                )[0]
-            )
+        n_bar_none = semantic_bar_count_after_fill(
+            input_ids,
+            self.tokenizer,
+            self.n_attribute_controls,
+            self.infill_type,
+        )
 
         penalty = float("inf")
 

@@ -15,7 +15,7 @@ from symusic import Score
 from torch import LongTensor
 from transformers import LogitsProcessorList
 
-from logits_processor import StopLogitsProcessor
+from logits_processor import StopLogitsProcessor, decoded_token_names
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -268,19 +268,14 @@ def infill_bars(
 
         start_time = time.time()
 
-        if subset_bars_to_infill[3] == "bar":
-            fill_start_idx = np.where(output_ids == tokenizer.vocab["FillBar_Start"])[0][0]
-        elif subset_bars_to_infill[3] == "track":
-            fill_start_idx = np.where(output_ids == tokenizer.vocab["Infill_Track"])[0][0]
-
         # Here we isolate the generated tokens doing some filtering. In particular,
         # the model may generate some tokens before the first Bar_None token
         generated_tokens = TokSequence(are_ids_encoded=True)
         print("output ids")
         # print(output_ids.tolist())
-        generated_tokens.ids = output_ids[
-            fill_start_idx + len(subset_bars_to_infill[2][0]) + 2 : -1
-        ].tolist()
+        generated_tokens.ids = _extract_generated_token_ids(
+            output_ids.tolist(), tokenizer, subset_bars_to_infill
+        )
         # decode_token_ids doesn't support numpy arrays for ids list
         # print(generated_tokens.ids)
         tokenizer.decode_token_ids(generated_tokens)
@@ -298,6 +293,54 @@ def infill_bars(
             "[INFO::infill_bars] Time spend for reconstructing the sequence: ",
             end_time - start_time,
         )
+
+
+def _extract_generated_token_ids(
+    output_ids: list[int],
+    tokenizer: MMM,
+    subset_bars_to_infill: tuple[int, int, list[list[str]], str],
+) -> list[int]:
+    """Extract only sampled MMM/BPE ids from a complete generation sequence.
+
+    The old implementation used ``fill_start + n_controls + 2`` and ``[:-1]``.
+    That assumes the initial ``Bar_None + TimeSig`` scaffold is always one BPE
+    token and that EOS is always the final token.  Both assumptions are
+    tokenizer- and runtime-dependent.  This implementation consumes the prompt
+    scaffold semantically and stops at the first semantic fill terminator.
+    """
+    infill_type = subset_bars_to_infill[3]
+    marker_name = "FillBar_Start" if infill_type == "bar" else "Infill_Track"
+    marker_id = tokenizer.vocab[marker_name]
+    marker_positions = [i for i, token_id in enumerate(output_ids) if token_id == marker_id]
+    if not marker_positions:
+        raise ValueError(f"{marker_name} marker is absent from generation output")
+
+    cursor = marker_positions[-1] + 1
+    if infill_type == "bar":
+        scaffold_seen = set()
+        while cursor < len(output_ids) and not {"Bar_None", "TimeSig_4/4"}.issubset(scaffold_seen):
+            scaffold_seen.update(decoded_token_names(tokenizer, output_ids[cursor]))
+            cursor += 1
+    else:
+        # Infill_Track is followed by Program before optional controls.
+        cursor += min(1, len(output_ids) - cursor)
+
+    controls_seen = 0
+    n_controls = len(subset_bars_to_infill[2][0]) if subset_bars_to_infill[2] else 0
+    while cursor < len(output_ids) and controls_seen < n_controls:
+        controls_seen += sum(
+            name.startswith("AC")
+            for name in decoded_token_names(tokenizer, output_ids[cursor])
+        )
+        cursor += 1
+
+    terminator_name = "FillBar_End" if infill_type == "bar" else "Track_End"
+    end = len(output_ids)
+    for index in range(cursor, len(output_ids)):
+        if terminator_name in decoded_token_names(tokenizer, output_ids[index]):
+            end = index
+            break
+    return [int(token_id) for token_id in output_ids[cursor:end]]
 
 
 def _adapt_prompt_for_infilling(
@@ -597,4 +640,3 @@ if __name__ == "__main__":
     plt.imshow(outtrack_truncated[0] + outtrack_truncated[1], aspect="auto", origin="lower")
     plt.savefig(OUTPR_PATH, dpi=300, bbox_inches="tight")
     
-

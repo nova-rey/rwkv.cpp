@@ -100,4 +100,4 @@ def test_bar_count_handles_compound_and_split_bar_encodings():
     sequence = [5, 1, 11, 13, 12, 14, 6]
     assert semantic_bar_count_after_fill(
         sequence, tokenizer, n_attribute_controls=1, infill_type="bar"
-    ) == 3
+    ) == 2
