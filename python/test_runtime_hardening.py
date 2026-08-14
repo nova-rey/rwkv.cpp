@@ -4,7 +4,11 @@ import torch
 
 sys.path.insert(0, ".")
 
-from logits_processor import StopLogitsProcessor, semantic_constraint_token_ids  # noqa: E402
+from logits_processor import (  # noqa: E402
+    StopLogitsProcessor,
+    canonical_structural_token_replacements,
+    semantic_constraint_token_ids,
+)
 from rwkv_cpp.cpp_model import apply_repetition_penalty  # noqa: E402
 
 
@@ -47,6 +51,8 @@ def test_structural_masks_are_tokenizer_semantic():
     assert constraints["DISALLOW_TRACK_START"] == {7}
     assert constraints["DISALLOW_TRACK_END"] == {8}
     assert constraints["DISALLOW_EMPTY_BPE"] == {3}
+
+    assert canonical_structural_token_replacements(FakeTokenizer()) == {2: 1}
     assert constraints["DISALLOW_EMPTY_BPE"] != {663}
 
 
