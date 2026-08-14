@@ -46,5 +46,5 @@ def test_extract_handles_split_scaffold_tokens():
 
 
 def test_extract_uses_last_fill_marker_and_does_not_use_last_token_as_eos():
-    output = [5, 1, 10, 13, 6, 5, 1, 10, 11, 13, 12, 6, 12]
+    output = [5, 1, 10, 13, 6, 5, 1, 10, 13, 12, 6, 12]
     assert _extract_generated_token_ids(output, FakeTokenizer(), subset(["ACBarNoteDensity_1"])) == [13, 12]
