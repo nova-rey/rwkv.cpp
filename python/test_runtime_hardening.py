@@ -72,3 +72,7 @@ def test_stop_processor_accepts_python_lists_and_applies_semantic_masks():
     assert not torch.isneginf(masked[0, 1])  # canonical compound encoding remains valid
     assert torch.isneginf(masked[0, 2])  # noncanonical equivalent is constrained
     assert torch.isneginf(masked[0, 3])  # invalid/empty BPE token
+
+    finished = processor([5, 9, 9], scores.clone())
+    assert finished[0, 6].item() == 0.0  # completed infill must force FillBar_End
+    assert torch.isneginf(finished[0, 1])
