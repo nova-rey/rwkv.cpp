@@ -27,18 +27,21 @@ def _semantic_token_ids(tokenizer, names: tuple[str, ...]) -> set[int]:
 
 
 def _bar_time_token_ids(tokenizer) -> set[int]:
-    """Return BPE ids encoding exactly a bar boundary and time signature.
+    """Return canonical 4/4 BPE ids for an immediately repeated bar boundary.
 
-    Tokens that also contain note/event material are valid continuations and must
-    not be treated as the consecutive-bar structural token.
+    The released model is trained on the bundled 4/4 grammar. Other compound
+    ``Bar_None + TimeSig_*`` tokens are legitimate time-signature structures and
+    must not be masked merely because they share the ``Bar_None`` prefix.
+    Multiple BPE ids can encode the same canonical MMM sequence (665 and 797 in
+    the bundled tokenizer), so this remains tokenizer-semantic rather than an ID
+    literal.
     """
     return {
         token_id
         for token_id in range(tokenizer.vocab_size)
         if (
-            len(_decoded_token_names(tokenizer, token_id)) == 2
-            and _decoded_token_names(tokenizer, token_id)[0] == "Bar_None"
-            and _decoded_token_names(tokenizer, token_id)[1].startswith("TimeSig_")
+            _decoded_token_names(tokenizer, token_id)
+            == ("Bar_None", "TimeSig_4/4")
         )
     }
 
