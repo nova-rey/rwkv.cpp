@@ -281,9 +281,7 @@ def infill_bars(
         tokenizer.decode_token_ids(generated_tokens)
         # print(generated_tokens.ids)
 
-        if len(generated_tokens.ids) > 0 and generated_tokens.ids[0] != tokenizer.vocab["Bar_None"]:
-            generated_tokens.ids.insert(0, tokenizer.vocab["Bar_None"])
-            generated_tokens.ids.insert(1, tokenizer.vocab["TimeSig_4/4"])
+        generated_tokens.ids = _ensure_generated_bar_prefix(generated_tokens.ids, tokenizer)
 
         tokens[track_idx].ids[token_start_idx:token_end_idx] = generated_tokens.ids
         tokens[track_idx].tokens = tokenizer._ids_to_tokens(tokens[track_idx].ids)
@@ -341,6 +339,18 @@ def _extract_generated_token_ids(
             end = index
             break
     return [int(token_id) for token_id in output_ids[cursor:end]]
+
+
+def _ensure_generated_bar_prefix(generated_ids: list[int], tokenizer: MMM) -> list[int]:
+    """Ensure a decoded bar stream starts at a bar boundary.
+
+    A compound BPE token may already contain ``Bar_None`` and ``TimeSig``;
+    comparing only against the canonical standalone ID would duplicate that
+    boundary during reconstruction.
+    """
+    if generated_ids and "Bar_None" in decoded_token_names(tokenizer, generated_ids[0]):
+        return list(generated_ids)
+    return [tokenizer.vocab["Bar_None"], tokenizer.vocab["TimeSig_4/4"], *generated_ids]
 
 
 def _adapt_prompt_for_infilling(
