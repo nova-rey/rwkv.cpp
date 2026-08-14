@@ -10,7 +10,7 @@ from logits_processor import (  # noqa: E402
     semantic_bar_count_after_fill,
     semantic_constraint_token_ids,
 )
-from rwkv_cpp.cpp_model import apply_repetition_penalty  # noqa: E402
+from rwkv_cpp.cpp_model import apply_repetition_penalty, semantic_bar_count  # noqa: E402
 
 
 class FakeTokenizer:
@@ -101,3 +101,14 @@ def test_bar_count_handles_compound_and_split_bar_encodings():
     assert semantic_bar_count_after_fill(
         sequence, tokenizer, n_attribute_controls=1, infill_type="bar"
     ) == 2
+
+
+def test_runtime_bar_index_counts_compound_bpe_boundaries():
+    tokenizer = FakeTokenizer()
+    tokenizer.vocab_size = 16
+    tokenizer.decoded.update({
+        11: ("TimeSig_4/4",),
+        12: ("Bar_None",),
+        13: ("Bar_None", "TimeSig_4/4"),
+    })
+    assert semantic_bar_count(tokenizer, [5, 13, 12, 11]) == 2

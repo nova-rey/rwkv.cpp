@@ -6,7 +6,7 @@ import json
 from miditok import MMM, TokSequence
 from transformers import LogitsProcessorList, GenerationConfig
 from . import rwkv_cpp_shared_library, rwkv_cpp_model
-from logits_processor import canonical_structural_token_replacements
+from logits_processor import canonical_structural_token_replacements, decoded_token_names
 
 
 class InvalidProbabilitySupportError(RuntimeError):
@@ -81,6 +81,16 @@ def _semantic_tail(tokenizer, sequence: list[int], count: int = 20) -> list[dict
         tokenizer.decode_token_ids(decoded)
         result.append({"id": int(token_id), "tokens": list(decoded.tokens or [])})
     return result
+
+
+def semantic_bar_count(tokenizer, sequence: list[int]) -> int:
+    """Count bar boundaries by decoded MMM semantics, not one BPE id.
+
+    The bundled tokenizer contains standalone, split, and compound encodings
+    for Bar_None.  Counting only ``vocab["Bar_None"]`` under-counts valid
+    prompt and generated sequences.
+    """
+    return sum("Bar_None" in decoded_token_names(tokenizer, token_id) for token_id in sequence)
 
 
 def _validate_probability_support(
@@ -210,6 +220,14 @@ class CustomGenerator:
             if "Bar_None" in t.tokens and any("TimeSig" in x for x in t.tokens):
                 self.tokens_have_bar_none_and_timesig.append(i)
         self.structural_token_replacements = canonical_structural_token_replacements(tokenizer)
+        self._ac_trace_enabled = os.environ.get("MIDI_RWKV_AC_TRACE", "") == "1"
+        self._ac_trace_path = None
+        self._ac_trace_records = []
+        if self._ac_trace_enabled:
+            trace_dir = os.environ.get("MIDI_RWKV_AC_TRACE_DIR", "trace")
+            os.makedirs(trace_dir, exist_ok=True)
+            self._ac_trace_path = os.path.join(trace_dir, "ac_injection_trace.jsonl")
+            open(self._ac_trace_path, "w", encoding="utf-8").close()
 
     def initialize_with_tuned_state(self, state_path):
         """
@@ -276,6 +294,7 @@ class CustomGenerator:
         attribute_controls: list = None,
     ) -> torch.LongTensor:
         self._sampling_trace = _SamplingTrace(self.tokenizer)
+        self._ac_trace_records = []
         batch_size = input_ids.shape[0]
         
         if batch_size > 1:
@@ -302,11 +321,12 @@ class CustomGenerator:
         tokens_generated = 0
         did_last_token_end_in_bar_none = False
         ac_idx = 1
+        pending_ac_event = None
 
         while tokens_generated < generation_config.max_new_tokens:
             # Convert logits to next_token_logits format (batch_size, vocab_size)
             next_token_logits = logits_tensor.clone()
-            bar_index = sum(token_id == self.tokenizer.vocab["Bar_None"] for token_id in current_sequence)
+            bar_index = semantic_bar_count(self.tokenizer, current_sequence)
             trace = {
                 "step_index": tokens_generated,
                 "bar_index": int(bar_index),
@@ -404,6 +424,13 @@ class CustomGenerator:
                 next_token_id, next_token_id
             )
 
+            if pending_ac_event is not None:
+                pending_ac_event["first_sampled_token_after_injection"] = {
+                    "id": int(next_token_id),
+                    "tokens": list(decoded_token_names(self.tokenizer, next_token_id)),
+                }
+                pending_ac_event = None
+
             # Process the generated token through the model
             logits, current_state = self.model.eval(
                 next_token_id, current_state, current_state, logits, use_numpy=True
@@ -424,8 +451,22 @@ class CustomGenerator:
                 if ac_idx >= len(attribute_controls):
                     break
 
-                injection_tokens = [self.tokenizer.vocab[ac] for ac in attribute_controls[ac_idx]]
+                injection_index = ac_idx
+                injection_tokens = [self.tokenizer.vocab[ac] for ac in attribute_controls[injection_index]]
                 ac_idx += 1
+
+                ac_event = {
+                    "completed_generated_bar_index": int(injection_index - 1),
+                    "next_generated_bar_index": int(injection_index),
+                    "attribute_control_index": int(injection_index),
+                    "attribute_control_tokens": list(attribute_controls[injection_index]),
+                    "attribute_control_token_ids": [int(token_id) for token_id in injection_tokens],
+                    "injection_position": int(len(current_sequence)),
+                    "trigger_token": {
+                        "id": int(next_token_id),
+                        "tokens": list(decoded_token_names(self.tokenizer, next_token_id)),
+                    },
+                }
 
                 for injected_token_id in injection_tokens:
                     logits, current_state = self.model.eval(
@@ -437,6 +478,8 @@ class CustomGenerator:
                 
                 # Update logits_tensor for the next iteration with the final injected token's logits
                 logits_tensor = torch.tensor(logits, dtype=torch.float32).unsqueeze(0)
+                self._ac_trace_records.append(ac_event)
+                pending_ac_event = ac_event
             
             tokens_generated += 1
             
@@ -445,6 +488,10 @@ class CustomGenerator:
                 break
         
         self._sampling_trace.close()
+        if self._ac_trace_enabled and self._ac_trace_path is not None:
+            with open(self._ac_trace_path, "w", encoding="utf-8") as handle:
+                for record in self._ac_trace_records:
+                    handle.write(json.dumps(record, sort_keys=True) + "\n")
         # Return the complete sequence (input + generated)
         generated_tensor = torch.tensor(current_sequence, dtype=torch.long).unsqueeze(0)
         return generated_tensor
