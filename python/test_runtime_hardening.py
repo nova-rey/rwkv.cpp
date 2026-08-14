@@ -7,6 +7,7 @@ sys.path.insert(0, ".")
 from logits_processor import (  # noqa: E402
     StopLogitsProcessor,
     canonical_structural_token_replacements,
+    semantic_bar_count_after_fill,
     semantic_constraint_token_ids,
 )
 from rwkv_cpp.cpp_model import apply_repetition_penalty  # noqa: E402
@@ -82,3 +83,21 @@ def test_stop_processor_accepts_python_lists_and_applies_semantic_masks():
     finished = processor([5, 9, 9], scores.clone())
     assert finished[0, 6].item() == 0.0  # completed infill must force FillBar_End
     assert torch.isneginf(finished[0, 1])
+
+
+def test_bar_count_handles_compound_and_split_bar_encodings():
+    tokenizer = FakeTokenizer()
+    tokenizer.vocab_size = 16
+    tokenizer.decoded.update({
+        11: ("ACBarNoteDensity_1",),
+        12: ("TimeSig_4/4",),
+        13: ("Bar_None",),
+        14: ("Bar_None", "TimeSig_3/4"),
+        15: (),
+    })
+    # FillBar_Start, one compound prompt bar, one AC packet, then two
+    # generated boundaries using different valid BPE layouts.
+    sequence = [5, 1, 11, 13, 12, 14, 6]
+    assert semantic_bar_count_after_fill(
+        sequence, tokenizer, n_attribute_controls=1, infill_type="bar"
+    ) == 3
